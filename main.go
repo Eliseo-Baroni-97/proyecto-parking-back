@@ -18,6 +18,11 @@ func conectarDB() {
 
 	dsn := os.Getenv("MYSQL_URL")
 
+	// 🚨 Si la URL comienza con "mysql://", la recortamos:
+	if len(dsn) >= 8 && dsn[:8] == "mysql://" {
+		dsn = dsn[8:]
+	}
+
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatal("Error al abrir la conexión:", err)
