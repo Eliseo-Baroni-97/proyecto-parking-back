@@ -16,12 +16,14 @@ var db *sql.DB
 func conectarDB() {
 	var err error
 
-	dsn := os.Getenv("MYSQL_URL")
+	// ✅ Variables estándar de Railway
+	host := os.Getenv("MYSQLHOST")
+	port := os.Getenv("MYSQLPORT")
+	user := os.Getenv("MYSQLUSER")
+	pass := os.Getenv("MYSQLPASSWORD")
+	dbName := os.Getenv("MYSQLDATABASE")
 
-	// 🚨 Si la URL comienza con "mysql://", la recortamos:
-	if len(dsn) >= 8 && dsn[:8] == "mysql://" {
-		dsn = dsn[8:]
-	}
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port, dbName)
 
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
@@ -47,8 +49,6 @@ type EstacionamientoNuevo struct {
 	Longitud float64       `json:"longitud"`
 	Dias     []DiaAtencion `json:"dias"`
 }
-
-// --- ESTRUCTURAS EXISTENTES ---
 
 type ActualizacionLugar struct {
 	EstacionamientoID int    `json:"estacionamiento_id"`
@@ -107,7 +107,7 @@ func main() {
 	conectarDB()
 	r := gin.Default()
 
-	// NUEVO: Crear estacionamiento completo con días
+	// 🚗 Crear nuevo estacionamiento con días de atención
 	r.POST("/estacionamientos", func(c *gin.Context) {
 		var req EstacionamientoNuevo
 		if err := c.BindJSON(&req); err != nil {
@@ -142,8 +142,6 @@ func main() {
 			"id":      estacionamientoID,
 		})
 	})
-
-	// Rutas existentes:
 
 	r.POST("/lugares", func(c *gin.Context) {
 		var req ActualizacionLugar
