@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
@@ -14,7 +15,16 @@ var db *sql.DB
 
 func conectarDB() {
 	var err error
-	db, err = sql.Open("mysql", "root:123456789@tcp(127.0.0.1:3306)/estacionamientos")
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true",
+		os.Getenv("DB_USER"),
+		os.Getenv("DB_PASSWORD"),
+		os.Getenv("DB_HOST"),
+		os.Getenv("DB_PORT"),
+		os.Getenv("DB_NAME"),
+	)
+
+	db, err = sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatal("Error al abrir la conexión:", err)
 	}
@@ -23,8 +33,6 @@ func conectarDB() {
 	}
 	fmt.Println("✅ Conectado a MySQL")
 }
-
-// --- ESTRUCTURAS NUEVAS ---
 
 type DiaAtencion struct {
 	Dia   string `json:"dia"`
