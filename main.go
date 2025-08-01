@@ -16,15 +16,21 @@ var db *sql.DB
 func conectarDB() {
 	var err error
 
-	// ✅ Usamos directamente la URL que nos da Railway
-	dsn := os.Getenv("MYSQL_URL")
+	// ✅ Variables estándar de Railway
+	host := os.Getenv("MYSQLHOST")
+	port := os.Getenv("MYSQLPORT")
+	user := os.Getenv("MYSQLUSER")
+	pass := os.Getenv("MYSQLPASSWORD")
+	dbName := os.Getenv("MYSQLDATABASE")
+
+	dsn := fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, pass, host, port, dbName)
 
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		log.Fatal("Error al abrir la conexión:", err)
+		log.Fatal("❌ Error al abrir la conexión:", err)
 	}
 	if err = db.Ping(); err != nil {
-		log.Fatal("No se pudo conectar a MySQL:", err)
+		log.Fatal("❌ No se pudo conectar a MySQL:", err)
 	}
 	fmt.Println("✅ Conectado a MySQL")
 }
@@ -137,7 +143,6 @@ func main() {
 		})
 	})
 
-	// 🧱 Crear lugares iniciales
 	r.POST("/lugares", func(c *gin.Context) {
 		var req ActualizacionLugar
 		if err := c.BindJSON(&req); err != nil {
@@ -165,7 +170,6 @@ func main() {
 		})
 	})
 
-	// 🔁 Actualizar estado de un lugar
 	r.POST("/lugares/estado", func(c *gin.Context) {
 		var estado EstadoLugar
 		if err := c.BindJSON(&estado); err != nil {
@@ -191,7 +195,6 @@ func main() {
 		})
 	})
 
-	// 💾 Guardar múltiples lugares
 	r.POST("/lugares/guardar-multiples", func(c *gin.Context) {
 		var req EstadoLugaresRequest
 		if err := c.BindJSON(&req); err != nil {
@@ -218,7 +221,6 @@ func main() {
 		})
 	})
 
-	// 🔍 Obtener estado de todos los lugares
 	r.GET("/estado/:id", func(c *gin.Context) {
 		estacionamientoID := c.Param("id")
 
