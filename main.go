@@ -16,7 +16,6 @@ var db *sql.DB
 func conectarDB() {
 	var err error
 
-	// ✅ Usamos el string DSN completo que nos da Railway
 	dsn := os.Getenv("MYSQL_URL")
 	if dsn == "" {
 		log.Fatal("❌ Variable de entorno MYSQL_URL no encontrada")
@@ -104,7 +103,7 @@ func main() {
 	conectarDB()
 	r := gin.Default()
 
-	// 🚗 Crear nuevo estacionamiento con días de atención
+	// 🚗 Crear nuevo estacionamiento
 	r.POST("/estacionamientos", func(c *gin.Context) {
 		var req EstacionamientoNuevo
 		if err := c.BindJSON(&req); err != nil {
@@ -250,5 +249,10 @@ func main() {
 		})
 	})
 
-	r.Run(":8080")
+	// ✅ 🔥 CAMBIO CLAVE: usar puerto dinámico en Railway
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Para local
+	}
+	r.Run(":" + port)
 }
