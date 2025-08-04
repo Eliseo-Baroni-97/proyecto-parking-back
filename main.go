@@ -26,6 +26,10 @@ func conectarDB() {
 		log.Fatal("❌ Error al abrir la conexión:", err)
 	}
 	if err = db.Ping(); err != nil {
+		var base string
+		db.QueryRow("SELECT DATABASE()").Scan(&base)
+		fmt.Println("🧠 Base de datos activa:", base)
+
 		log.Fatal("❌ No se pudo conectar a MySQL:", err)
 	}
 	fmt.Println("✅ Conectado a MySQL")
