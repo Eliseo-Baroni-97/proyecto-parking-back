@@ -42,6 +42,7 @@ type DiaAtencion struct {
 }
 
 type EstacionamientoNuevo struct {
+	ID       int           `json:"id"` // ahora se envía desde el frontend
 	DuenioID int           `json:"duenio_id"`
 	Nombre   string        `json:"nombre"`
 	Cantidad int           `json:"cantidad"`
@@ -107,7 +108,7 @@ func main() {
 	conectarDB()
 	r := gin.Default()
 
-	// 🚗 Crear nuevo estacionamiento
+	// 🚗 Crear nuevo estacionamiento (ahora enviando ID desde el frontend)
 	r.POST("/estacionamientos", func(c *gin.Context) {
 		var req EstacionamientoNuevo
 		if err := c.BindJSON(&req); err != nil {
@@ -116,22 +117,20 @@ func main() {
 		}
 
 		res, err := db.Exec(`
-	INSERT INTO estacionamientos (id, duenio_id, nombre, cantidad, latitud, longitud)
-	VALUES (NULL, ?, ?, ?, ?, ?)
-`, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+			INSERT INTO estacionamientos (id, duenio_id, nombre, cantidad, latitud, longitud)
+			VALUES (?, ?, ?, ?, ?, ?)
+		`, req.ID, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
 		if err != nil {
 			log.Println("❌ Error al guardar estacionamiento:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "DB error"})
 			return
 		}
 
-		estacionamientoID, _ := res.LastInsertId()
-
 		for _, dia := range req.Dias {
 			_, err := db.Exec(`
 				INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
 				VALUES (?, ?, ?, ?)
-			`, estacionamientoID, dia.Dia, dia.Desde, dia.Hasta)
+			`, req.ID, dia.Dia, dia.Desde, dia.Hasta)
 			if err != nil {
 				log.Println("❌ Error al guardar día:", err)
 			}
@@ -139,7 +138,7 @@ func main() {
 
 		c.JSON(http.StatusOK, gin.H{
 			"mensaje": "Estacionamiento creado correctamente",
-			"id":      estacionamientoID,
+			"id":      req.ID,
 		})
 	})
 
@@ -253,10 +252,10 @@ func main() {
 		})
 	})
 
-	// ✅ 🔥 CAMBIO CLAVE: usar puerto dinámico en Railway
+	// ✅ 🔥 Puerto dinámico
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // Para local
+		port = "8080"
 	}
 	r.Run(":" + port)
 }
