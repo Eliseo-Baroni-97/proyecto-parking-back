@@ -116,10 +116,11 @@ func main() {
 			return
 		}
 
-		res, err := db.Exec(`
-			INSERT INTO estacionamientos (id, duenio_id, nombre, cantidad, latitud, longitud)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, req.ID, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+		_, err := db.Exec(`
+	INSERT INTO estacionamientos (id, duenio_id, nombre, cantidad, latitud, longitud)
+	VALUES (?, ?, ?, ?, ?, ?)
+`, req.ID, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+
 		if err != nil {
 			log.Println("❌ Error al guardar estacionamiento:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "DB error"})
