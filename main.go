@@ -100,6 +100,36 @@ func mostrarEstadoLugares(estacionamientoID int) {
 	fmt.Println("------------------------------------")
 }
 
+func obtenerDiasDeAtencion(c *gin.Context) {
+	id := c.Param("id")
+
+	rows, err := db.Query(`
+		SELECT dia, desde, hasta 
+		FROM dias_atencion 
+		WHERE estacionamiento_id = ?
+	`, id)
+	if err != nil {
+		log.Println("❌ Error al consultar días:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "DB error"})
+		return
+	}
+	defer rows.Close()
+
+	var dias []DiaAtencion
+	for rows.Next() {
+		var dia DiaAtencion
+		if err := rows.Scan(&dia.Dia, &dia.Desde, &dia.Hasta); err != nil {
+			log.Println("❌ Error al escanear fila:", err)
+			continue
+		}
+		dias = append(dias, dia)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"dias": dias,
+	})
+}
+
 func main() {
 	conectarDB()
 	r := gin.Default()
@@ -255,6 +285,8 @@ func main() {
 			"lugares": lugares,
 		})
 	})
+
+	r.GET("/estacionamientos/:id/dias", obtenerDiasDeAtencion)
 
 	// ✅ 🔥 Puerto dinámico
 	port := os.Getenv("PORT")
