@@ -14,8 +14,10 @@ import (
 var db *sql.DB
 
 func conectarDB() {
+
 	var err error
 	dsn := os.Getenv("MYSQL_URL")
+	fmt.Println("🔌 DSN:", dsn)
 	if dsn == "" {
 		log.Fatal("❌ Variable de entorno MYSQL_URL no encontrada")
 	}
