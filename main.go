@@ -142,6 +142,9 @@ func main() {
 			return
 		}
 
+		log.Printf("🧪 Datos recibidos: DuenioID=%d, Nombre=%s, Cantidad=%d, Lat=%.4f, Lng=%.4f",
+			req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+
 		res, err := db.Exec(`
 			INSERT INTO estacionamientos (duenio_id, nombre, cantidad, latitud, longitud)
 			VALUES (?, ?, ?, ?, ?)
