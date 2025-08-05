@@ -15,12 +15,10 @@ var db *sql.DB
 
 func conectarDB() {
 	var err error
-
 	dsn := os.Getenv("MYSQL_URL")
 	if dsn == "" {
 		log.Fatal("❌ Variable de entorno MYSQL_URL no encontrada")
 	}
-
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
 		log.Fatal("❌ Error al abrir la conexión:", err)
@@ -29,7 +27,6 @@ func conectarDB() {
 		var base string
 		db.QueryRow("SELECT DATABASE()").Scan(&base)
 		fmt.Println("🧠 Base de datos activa:", base)
-
 		log.Fatal("❌ No se pudo conectar a MySQL:", err)
 	}
 	fmt.Println("✅ Conectado a MySQL")
@@ -42,7 +39,6 @@ type DiaAtencion struct {
 }
 
 type EstacionamientoNuevo struct {
-	ID       int           `json:"id"` // ahora se envía desde el frontend
 	DuenioID int           `json:"duenio_id"`
 	Nombre   string        `json:"nombre"`
 	Cantidad int           `json:"cantidad"`
@@ -108,7 +104,7 @@ func main() {
 	conectarDB()
 	r := gin.Default()
 
-	// 🚗 Crear nuevo estacionamiento (ahora enviando ID desde el frontend)
+	// 🚗 Crear nuevo estacionamiento (sin enviar ID desde el frontend)
 	r.POST("/estacionamientos", func(c *gin.Context) {
 		var req EstacionamientoNuevo
 		if err := c.BindJSON(&req); err != nil {
@@ -116,10 +112,10 @@ func main() {
 			return
 		}
 
-		_, err := db.Exec(`
-	INSERT INTO estacionamientos (duenio_id, nombre, cantidad, latitud, longitud)
-	VALUES (?, ?, ?, ?, ?, ?)
-`, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+		res, err := db.Exec(`
+			INSERT INTO estacionamientos (duenio_id, nombre, cantidad, latitud, longitud)
+			VALUES (?, ?, ?, ?, ?)
+		`, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
 
 		if err != nil {
 			log.Println("❌ Error al guardar estacionamiento:", err)
@@ -127,11 +123,18 @@ func main() {
 			return
 		}
 
+		nuevoID, err := res.LastInsertId()
+		if err != nil {
+			log.Println("❌ Error al obtener ID insertado:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error al recuperar ID"})
+			return
+		}
+
 		for _, dia := range req.Dias {
 			_, err := db.Exec(`
 				INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
 				VALUES (?, ?, ?, ?)
-			`, req.ID, dia.Dia, dia.Desde, dia.Hasta)
+			`, nuevoID, dia.Dia, dia.Desde, dia.Hasta)
 			if err != nil {
 				log.Println("❌ Error al guardar día:", err)
 			}
@@ -139,7 +142,7 @@ func main() {
 
 		c.JSON(http.StatusOK, gin.H{
 			"mensaje": "Estacionamiento creado correctamente",
-			"id":      req.ID,
+			"id":      nuevoID,
 		})
 	})
 
