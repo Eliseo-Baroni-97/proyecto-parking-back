@@ -118,7 +118,7 @@ func main() {
 
 		_, err := db.Exec(`
 	INSERT INTO estacionamientos (duenio_id, nombre, cantidad, latitud, longitud)
-	VALUES (?, ?, ?, ?, ?)
+	VALUES (?, ?, ?, ?, ?, ?)
 `, req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
 
 		if err != nil {
