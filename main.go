@@ -21,7 +21,7 @@ func getDSN() string {
 	if v := os.Getenv("MYSQL_URL"); v != "" {
 		return v
 	}
-	// Fallback: tu DSN actual (puedes borrarlo si ya usas MYSQL_URL en Railway)
+	// Fallback: DSN actual (puedes borrarlo si ya usas MYSQL_URL en Railway)
 	return "root:tDXPIyOImvUcSPoZIpIEQwkkqpmabXMp@tcp(trolley.proxy.rlwy.net:31348)/railway?parseTime=true&charset=utf8mb4"
 }
 
@@ -381,7 +381,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"mensaje": "Lugares guardados correctamente", "total": len(req.Lugares)})
 	})
 
-	// 🔍 Consultar estado
+	// 🔍 Consultar estado (lista de lugares)
 	r.GET("/estado/:id", func(c *gin.Context) {
 		estacionamientoID := c.Param("id")
 
@@ -432,6 +432,105 @@ func main() {
 			dias = append(dias, dia)
 		}
 		c.JSON(http.StatusOK, gin.H{"dias": dias})
+	})
+
+	// 📃 Obtener un estacionamiento por ID (con resumen)
+	r.GET("/estacionamientos/:id", func(c *gin.Context) {
+		id := c.Param("id")
+
+		var e struct {
+			ID       int64   `json:"id"`
+			DuenioID int     `json:"duenio_id"`
+			Nombre   string  `json:"nombre"`
+			Cantidad int     `json:"cantidad"`
+			Latitud  float64 `json:"latitud"`
+			Longitud float64 `json:"longitud"`
+		}
+		if err := db.QueryRow(`
+			SELECT id, duenio_id, nombre, cantidad, latitud, longitud
+			FROM estacionamientos WHERE id = ?`, id).
+			Scan(&e.ID, &e.DuenioID, &e.Nombre, &e.Cantidad, &e.Latitud, &e.Longitud); err != nil {
+			dbErr(c, err)
+			return
+		}
+
+		var ocupados int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM lugares WHERE estacionamiento_id=? AND ocupado=1`, id).Scan(&ocupados)
+
+		c.JSON(200, gin.H{
+			"estacionamiento": e,
+			"resumen": gin.H{
+				"total":    e.Cantidad,
+				"ocupados": ocupados,
+				"libres":   e.Cantidad - ocupados,
+			},
+		})
+	})
+
+	// 👀 Listar todos (o cercanos con lat/lng & km)
+	r.GET("/estacionamientos", func(c *gin.Context) {
+		type Item struct {
+			ID       int64   `json:"id"`
+			Nombre   string  `json:"nombre"`
+			Latitud  float64 `json:"latitud"`
+			Longitud float64 `json:"longitud"`
+			Total    int     `json:"total"`
+			Ocupados int     `json:"ocupados"`
+			Libres   int     `json:"libres"`
+		}
+
+		lat := c.Query("lat")
+		lng := c.Query("lng")
+		km := c.DefaultQuery("km", "3")
+
+		var rows *sql.Rows
+		var err error
+
+		if lat != "" && lng != "" {
+			// bounding box aprox: 1° lat ~111km, 1° lng ~111km*cos(lat)
+			q := `
+			WITH agg AS (
+			  SELECT e.id, e.nombre, e.latitud, e.longitud,
+			         e.cantidad AS total,
+			         SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END) AS ocupados
+			  FROM estacionamientos e
+			  LEFT JOIN lugares l ON l.estacionamiento_id = e.id
+			  GROUP BY e.id
+			)
+			SELECT id, nombre, latitud, longitud, total,
+			       IFNULL(ocupados,0) AS ocupados,
+			       (total-IFNULL(ocupados,0)) AS libres
+			FROM agg
+			WHERE latitud  BETWEEN ?-?/111.0 AND ?+?/111.0
+			  AND longitud BETWEEN ?-?/(111.0*COS(RADIANS(?))) AND ?+?/(111.0*COS(RADIANS(?)))
+			ORDER BY id DESC;`
+			rows, err = db.Query(q, lat, km, lat, km, lng, km, lat, lng, km, lat)
+		} else {
+			q := `
+			SELECT e.id, e.nombre, e.latitud, e.longitud,
+			       e.cantidad AS total,
+			       COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END),0) AS ocupados
+			FROM estacionamientos e
+			LEFT JOIN lugares l ON l.estacionamiento_id = e.id
+			GROUP BY e.id, e.nombre, e.latitud, e.longitud, e.cantidad
+			ORDER BY e.id DESC;`
+			rows, err = db.Query(q)
+		}
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		defer rows.Close()
+
+		var list []Item
+		for rows.Next() {
+			var it Item
+			if err := rows.Scan(&it.ID, &it.Nombre, &it.Latitud, &it.Longitud, &it.Total, &it.Ocupados); err == nil {
+				it.Libres = it.Total - it.Ocupados
+				list = append(list, it)
+			}
+		}
+		c.JSON(200, gin.H{"estacionamientos": list})
 	})
 
 	// ✅ Puerto dinámico
