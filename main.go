@@ -137,6 +137,50 @@ func ensureLugaresUniqueIndex() error {
 	return nil
 }
 
+// Asegura AUTO_INCREMENT para una tabla dada (id)
+func ensureAI(table string) error {
+	var extra sql.NullString
+	if err := db.QueryRow(`
+		SELECT EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+		WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME=? AND COLUMN_NAME='id'`, table).Scan(&extra); err != nil {
+		return err
+	}
+	if !extra.Valid || !strings.Contains(strings.ToLower(extra.String), "auto_increment") {
+		if _, err := db.Exec(`ALTER TABLE ` + table + ` MODIFY id INT NOT NULL AUTO_INCREMENT`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Agrega columnas opcionales a estacionamientos si faltan (mantiene nombres/tipos)
+func ensureEstacionamientosExtraCols() error {
+	type col struct{ name, ddl string }
+	cols := []col{
+		{"precio_por_hora", "ADD COLUMN precio_por_hora DECIMAL(10,2) NULL"},
+		{"techado", "ADD COLUMN techado ENUM('techado','media_sombra','no') NULL"},
+		{"seguridad", "ADD COLUMN seguridad SET('camaras','vigilante') NULL"},
+		{"banos", "ADD COLUMN banos TINYINT(1) NOT NULL DEFAULT 0"},
+		{"altura_max_m", "ADD COLUMN altura_max_m DECIMAL(4,2) NULL"},
+	}
+	for _, c := range cols {
+		var cnt int
+		if err := db.QueryRow(`
+			SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE()
+			  AND TABLE_NAME = 'estacionamientos'
+			  AND COLUMN_NAME = ?`, c.name).Scan(&cnt); err != nil {
+			return err
+		}
+		if cnt == 0 {
+			if _, err := db.Exec(`ALTER TABLE estacionamientos ` + c.ddl); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // ----------- TIPOS -------------
 
 type DiaAtencion struct {
@@ -146,12 +190,17 @@ type DiaAtencion struct {
 }
 
 type EstacionamientoNuevo struct {
-	DuenioID int           `json:"duenio_id"`
-	Nombre   string        `json:"nombre"`
-	Cantidad int           `json:"cantidad"`
-	Latitud  float64       `json:"latitud"`
-	Longitud float64       `json:"longitud"`
-	Dias     []DiaAtencion `json:"dias"`
+	DuenioID      int           `json:"duenio_id"`
+	Nombre        string        `json:"nombre"`
+	Cantidad      int           `json:"cantidad"`
+	Latitud       float64       `json:"latitud"`
+	Longitud      float64       `json:"longitud"`
+	PrecioPorHora *float64      `json:"precio_por_hora"` // opcional
+	Techado       *string       `json:"techado"`         // "techado"|"media_sombra"|"no"
+	Seguridad     []string      `json:"seguridad"`       // ["camaras","vigilante"]
+	Banos         *bool         `json:"banos"`           // true/false
+	AlturaMaxM    *float64      `json:"altura_max_m"`    // opcional
+	Dias          []DiaAtencion `json:"dias"`
 }
 
 type ActualizacionLugar struct {
@@ -230,6 +279,17 @@ func main() {
 	if err := ensureEstacionamientosAI(); err != nil {
 		log.Fatal("ensureEstacionamientosAI:", err)
 	}
+	// Asegurar AI genérico en las otras tablas por si ya existían
+	if err := ensureAI("lugares"); err != nil {
+		log.Fatal("ensureAI(lugares):", err)
+	}
+	if err := ensureAI("dias_atencion"); err != nil {
+		log.Fatal("ensureAI(dias_atencion):", err)
+	}
+	// Agregar columnas nuevas si faltan (manteniendo nombres/tipos)
+	if err := ensureEstacionamientosExtraCols(); err != nil {
+		log.Fatal("ensureEstacionamientosExtraCols:", err)
+	}
 	if err := ensureLugaresUniqueIndex(); err != nil {
 		log.Fatal("ensureLugaresUniqueIndex:", err)
 	}
@@ -265,19 +325,42 @@ func main() {
 
 	// 🚗 Crear nuevo estacionamiento
 	r.POST("/estacionamientos", func(c *gin.Context) {
-		var req EstacionamientoNuevo
-		if err := c.BindJSON(&req); err != nil {
+		var in EstacionamientoNuevo
+		if err := c.BindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
 
 		log.Printf("🧪 Datos recibidos: DuenioID=%d, Nombre=%s, Cantidad=%d, Lat=%.4f, Lng=%.4f",
-			req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud)
+			in.DuenioID, in.Nombre, in.Cantidad, in.Latitud, in.Longitud)
+
+		// Seguridad (SET) -> CSV validado
+		seg := ""
+		if len(in.Seguridad) > 0 {
+			allowed := map[string]bool{"camaras": true, "vigilante": true}
+			out := make([]string, 0, len(in.Seguridad))
+			for _, v := range in.Seguridad {
+				if allowed[v] {
+					out = append(out, v)
+				}
+			}
+			if len(out) > 0 {
+				seg = strings.Join(out, ",")
+			}
+		}
+		// Banos (bool) -> TINYINT(1)
+		banos := 0
+		if in.Banos != nil && *in.Banos {
+			banos = 1
+		}
 
 		res, err := db.Exec(`
-			INSERT INTO estacionamientos (duenio_id, nombre, cantidad, latitud, longitud)
-			VALUES (?, ?, ?, ?, ?)`,
-			req.DuenioID, req.Nombre, req.Cantidad, req.Latitud, req.Longitud,
+			INSERT INTO estacionamientos
+				(duenio_id, nombre, cantidad, latitud, longitud,
+				 precio_por_hora, techado, seguridad, banos, altura_max_m)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			in.DuenioID, in.Nombre, in.Cantidad, in.Latitud, in.Longitud,
+			in.PrecioPorHora, in.Techado, seg, banos, in.AlturaMaxM,
 		)
 		if err != nil {
 			log.Println("❌ Error al guardar estacionamiento:", err)
@@ -292,7 +375,8 @@ func main() {
 			return
 		}
 
-		for _, dia := range req.Dias {
+		// Días
+		for _, dia := range in.Dias {
 			_, err := db.Exec(`
 				INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
 				VALUES (?, ?, ?, ?)`,
