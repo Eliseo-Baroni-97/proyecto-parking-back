@@ -519,21 +519,30 @@ func main() {
 	})
 
 	// 📃 Obtener un estacionamiento por ID (con resumen)
+	// 📃 Detalle completo + resumen
 	r.GET("/estacionamientos/:id", func(c *gin.Context) {
 		id := c.Param("id")
 
 		var e struct {
-			ID       int64   `json:"id"`
-			DuenioID int     `json:"duenio_id"`
-			Nombre   string  `json:"nombre"`
-			Cantidad int     `json:"cantidad"`
-			Latitud  float64 `json:"latitud"`
-			Longitud float64 `json:"longitud"`
+			ID            int64    `json:"id"`
+			DuenioID      int      `json:"duenio_id"`
+			Nombre        string   `json:"nombre"`
+			Cantidad      int      `json:"cantidad"`
+			Latitud       float64  `json:"latitud"`
+			Longitud      float64  `json:"longitud"`
+			PrecioPorHora *float64 `json:"precio_por_hora"`
+			Techado       *string  `json:"techado"`
+			Seguridad     *string  `json:"seguridad"` // CSV del SET: "camaras,vigilante"
+			Banos         int      `json:"banos"`     // 0/1
+			AlturaMaxM    *float64 `json:"altura_max_m"`
 		}
 		if err := db.QueryRow(`
-			SELECT id, duenio_id, nombre, cantidad, latitud, longitud
-			FROM estacionamientos WHERE id = ?`, id).
-			Scan(&e.ID, &e.DuenioID, &e.Nombre, &e.Cantidad, &e.Latitud, &e.Longitud); err != nil {
+		SELECT id, duenio_id, nombre, cantidad, latitud, longitud,
+		       precio_por_hora, techado, seguridad, banos, altura_max_m
+		FROM estacionamientos
+		WHERE id = ?`, id).
+			Scan(&e.ID, &e.DuenioID, &e.Nombre, &e.Cantidad, &e.Latitud, &e.Longitud,
+				&e.PrecioPorHora, &e.Techado, &e.Seguridad, &e.Banos, &e.AlturaMaxM); err != nil {
 			dbErr(c, err)
 			return
 		}
@@ -543,11 +552,7 @@ func main() {
 
 		c.JSON(200, gin.H{
 			"estacionamiento": e,
-			"resumen": gin.H{
-				"total":    e.Cantidad,
-				"ocupados": ocupados,
-				"libres":   e.Cantidad - ocupados,
-			},
+			"resumen":         gin.H{"total": e.Cantidad, "ocupados": ocupados, "libres": e.Cantidad - ocupados},
 		})
 	})
 
