@@ -181,6 +181,8 @@ func main() {
 
 		fmt.Println("✅ Password correcta, generando token...")
 
+		fmt.Println("🔧 JWT_SECRET en runtime:", os.Getenv("JWT_SECRET"))
+
 		secret := os.Getenv("JWT_SECRET")
 		if secret == "" {
 			fmt.Println("❌ JWT_SECRET no definido")
