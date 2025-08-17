@@ -183,7 +183,8 @@ func main() {
 
 		fmt.Println("🔧 JWT_SECRET en runtime:", os.Getenv("JWT_SECRET"))
 
-		secret := os.Getenv("JWT_SECRET")
+		secret := os.Getenv("MY_SUPER_JWT")
+		fmt.Println("🔎 Valor de MY_SUPER_JWT:", secret)
 		if secret == "" {
 			fmt.Println("❌ JWT_SECRET no definido")
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "JWT no configurado"})
