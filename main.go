@@ -2,7 +2,6 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -114,17 +113,29 @@ func main() {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
+
+		// Validar campos vacíos
+		if payload.Email == "" || payload.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Email y contraseña requeridos"})
+			return
+		}
+
+		// Hash de la contraseña
 		hash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "hash error"})
 			return
 		}
+
+		// Insertar
 		res, err := db.Exec(`INSERT INTO usuarios (email, password_hash) VALUES (?,?)`,
 			payload.Email, string(hash))
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Email ya registrado"})
+			log.Println("❌ INSERT error:", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Registro inválido"})
 			return
 		}
+
 		id, _ := res.LastInsertId()
 		c.JSON(http.StatusOK, gin.H{"id": id, "email": payload.Email})
 	})
