@@ -2,15 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -109,70 +108,40 @@ func main() {
 
 	r.POST("/register", func(c *gin.Context) {
 		var payload RegisterRequest
+
+		fmt.Println("👉 Se llamó a /register")
+
 		if err := c.BindJSON(&payload); err != nil {
+			fmt.Println("❌ Error al parsear JSON:", err)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
 
-		// Validar campos vacíos
-		if payload.Email == "" || payload.Password == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Email y contraseña requeridos"})
-			return
-		}
+		fmt.Println("📥 Payload recibido:", payload)
 
-		// Hash de la contraseña
+		// Generar hash
 		hash, err := bcrypt.GenerateFromPassword([]byte(payload.Password), bcrypt.DefaultCost)
 		if err != nil {
+			fmt.Println("❌ Error al generar hash:", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "hash error"})
 			return
 		}
 
-		// Insertar
-		res, err := db.Exec(`INSERT INTO usuarios (email, password_hash) VALUES (?,?)`,
-			payload.Email, string(hash))
+		// Insertar en la base
+		res, err := db.Exec(
+			`INSERT INTO usuarios (email, password_hash) VALUES (?,?)`,
+			payload.Email, string(hash),
+		)
 		if err != nil {
-			log.Println("❌ INSERT error:", err)
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Registro inválido"})
+			fmt.Println("❌ Error al insertar en DB:", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Email ya registrado"})
 			return
 		}
 
 		id, _ := res.LastInsertId()
-		c.JSON(http.StatusOK, gin.H{"id": id, "email": payload.Email})
-	})
+		fmt.Println("✅ Usuario registrado con ID:", id)
 
-	r.POST("/login", func(c *gin.Context) {
-		var payload LoginRequest
-		if err := c.BindJSON(&payload); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
-			return
-		}
-		var u User
-		if err := db.QueryRow(`SELECT id, email, password_hash FROM usuarios WHERE email = ?`,
-			payload.Email).Scan(&u.ID, &u.Email, &u.PasswordHash); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
-			return
-		}
-		if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(payload.Password)); err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
-			return
-		}
-		secret := os.Getenv("JWT_SECRET")
-		if secret == "" {
-			c.JSON(500, gin.H{"error": "JWT_SECRET no configurado"})
-			return
-		}
-		claims := jwt.MapClaims{
-			"user_id": u.ID,
-			"email":   u.Email,
-			"exp":     time.Now().Add(24 * time.Hour).Unix(),
-		}
-		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		signed, err := token.SignedString([]byte(secret))
-		if err != nil {
-			c.JSON(500, gin.H{"error": "Token error"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"token": signed})
+		c.JSON(http.StatusOK, gin.H{"id": id, "email": payload.Email})
 	})
 
 	// ============= 🚗 ESTACIONAMIENTOS ==============
