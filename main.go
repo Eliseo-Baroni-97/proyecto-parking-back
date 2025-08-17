@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -142,6 +144,65 @@ func main() {
 		fmt.Println("✅ Usuario registrado con ID:", id)
 
 		c.JSON(http.StatusOK, gin.H{"id": id, "email": payload.Email})
+	})
+
+	// ================= 🔐 LOGIN ==================
+	r.POST("/login", func(c *gin.Context) {
+		fmt.Println("👉 Se llamó a /login")
+
+		var payload LoginRequest
+		if err := c.BindJSON(&payload); err != nil {
+			fmt.Println("❌ Error al parsear JSON:", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
+			return
+		}
+
+		fmt.Println("📥 Payload login recibido:", payload)
+
+		// Buscar usuario
+		var u User
+		err := db.QueryRow(`SELECT id, email, password_hash FROM usuarios WHERE email = ?`, payload.Email).
+			Scan(&u.ID, &u.Email, &u.PasswordHash)
+
+		if err != nil {
+			fmt.Println("❌ No se encontró usuario:", err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
+			return
+		}
+
+		fmt.Println("🔎 Usuario encontrado:", u.Email, "hash:", u.PasswordHash)
+
+		// Comparar password
+		if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(payload.Password)); err != nil {
+			fmt.Println("❌ La contraseña no coincide:", err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
+			return
+		}
+
+		fmt.Println("✅ Password correcta, generando token...")
+
+		secret := os.Getenv("JWT_SECRET")
+		if secret == "" {
+			fmt.Println("❌ JWT_SECRET no definido")
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "JWT no configurado"})
+			return
+		}
+
+		claims := jwt.MapClaims{
+			"user_id": u.ID,
+			"email":   u.Email,
+			"exp":     time.Now().Add(24 * time.Hour).Unix(),
+		}
+		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+		signed, err := token.SignedString([]byte(secret))
+		if err != nil {
+			fmt.Println("❌ Error al firmar token:", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Token error"})
+			return
+		}
+
+		fmt.Println("✅ Login exitoso, token:", signed)
+		c.JSON(http.StatusOK, gin.H{"token": signed})
 	})
 
 	// ============= 🚗 ESTACIONAMIENTOS ==============
