@@ -148,6 +148,8 @@ func main() {
 
 	// ================= 🔐 LOGIN ==================
 	r.POST("/login", func(c *gin.Context) {
+		fmt.Println("🛠 JWT_SECRET en runtime (Railway):", os.Getenv("JWT_SECRET"))
+
 		fmt.Println("👉 Se llamó a /login")
 
 		var payload LoginRequest
