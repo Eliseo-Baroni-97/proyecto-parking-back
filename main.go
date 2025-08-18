@@ -98,6 +98,44 @@ func dbErr(c *gin.Context, err error) {
 	c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 }
 
+// ========= MIDDLEWARE (leer user_id desde el JWT) =============
+
+func AuthMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Leer header Authorization: "Bearer xxx"
+		auth := c.GetHeader("Authorization")
+		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token no enviado"})
+			return
+		}
+		tokenString := strings.TrimPrefix(auth, "Bearer ")
+
+		// Parsear y validar token
+		secret := os.Getenv("JWT_SECRET")
+		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
+			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("method not allowed")
+			}
+			return []byte(secret), nil
+		})
+
+		if err != nil || !token.Valid {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token inválido"})
+			return
+		}
+
+		// Obtener "user_id" del token
+		if claims, ok := token.Claims.(jwt.MapClaims); ok {
+			if uid, ok := claims["user_id"].(float64); ok {
+				// lo guardamos en el contexto → c.Get("userID")
+				c.Set("userID", int(uid))
+			}
+		}
+
+		c.Next()
+	}
+}
+
 // ----------- MAIN ------------
 
 func main() {
@@ -254,6 +292,45 @@ func main() {
 				nuevoID, dia.Dia, dia.Desde, dia.Hasta)
 		}
 		c.JSON(http.StatusOK, gin.H{"id": nuevoID})
+	})
+
+	// =================== 🔎 LISTAR MIS ESTACIONAMIENTOS =================
+	r.GET("/mis-estacionamientos", AuthMiddleware(), func(c *gin.Context) {
+		// obtener el userID desde el contexto
+		uidVal, exists := c.Get("userID")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Sin usuario"})
+			return
+		}
+		userID := uidVal.(int)
+
+		rows, err := db.Query(`
+		SELECT id, nombre, cantidad, latitud, longitud
+		FROM estacionamientos
+		WHERE duenio_id = ?`, userID)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		defer rows.Close()
+
+		type Item struct {
+			ID       int     `json:"id"`
+			Nombre   string  `json:"nombre"`
+			Cantidad int     `json:"cantidad"`
+			Latitud  float64 `json:"latitud"`
+			Longitud float64 `json:"longitud"`
+		}
+
+		var list []Item
+		for rows.Next() {
+			var it Item
+			if err := rows.Scan(&it.ID, &it.Nombre, &it.Cantidad, &it.Latitud, &it.Longitud); err == nil {
+				list = append(list, it)
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{"estacionamientos": list})
 	})
 
 	r.POST("/lugares", func(c *gin.Context) {
