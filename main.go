@@ -418,4 +418,7 @@ func main() {
 	}
 	log.Println("🚀 listening on port", port)
 	r.Run(":" + port)
+	// 👇 esto es solo para que el import "fmt" no quede sin usar
+	_ = fmt.Println
+
 }
