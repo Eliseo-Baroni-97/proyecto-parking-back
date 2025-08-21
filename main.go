@@ -245,7 +245,10 @@ func main() {
 		}
 
 		fmt.Println("✅ Login exitoso, token:", signed)
-		c.JSON(http.StatusOK, gin.H{"token": signed})
+		c.JSON(http.StatusOK, gin.H{
+			"token":   signed,
+			"user_id": u.ID, // ← DEVOLVEMOS TAMBIÉN EL ID DEL USUARIO
+		})
 	})
 
 	// ============= 🚗 ESTACIONAMIENTOS ==============
