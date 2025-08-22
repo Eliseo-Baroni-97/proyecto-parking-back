@@ -253,12 +253,18 @@ func main() {
 
 	// ============= 🚗 ESTACIONAMIENTOS ==============
 
-	r.POST("/estacionamientos", func(c *gin.Context) {
+	// PROTEGER con AuthMiddleware
+	r.POST("/estacionamientos", AuthMiddleware(), func(c *gin.Context) {
 		var in EstacionamientoNuevo
 		if err := c.BindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
+
+		// ← ← ← TOMAR EL userID del token y IGNORAR cualquier duenio_id que venga del front
+		uidVal, _ := c.Get("userID")
+		duenioID := uidVal.(int)
+
 		seg := ""
 		if len(in.Seguridad) > 0 {
 			allowed := map[string]bool{"camaras": true, "vigilante": true}
@@ -276,12 +282,13 @@ func main() {
 		if in.Banos != nil && *in.Banos {
 			banos = 1
 		}
+
 		res, err := db.Exec(`
-			INSERT INTO estacionamientos
-				(duenio_id, nombre, cantidad, latitud, longitud,
-				 precio_por_hora, techado, seguridad, banos, altura_max_m)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			in.DuenioID, in.Nombre, in.Cantidad, in.Latitud, in.Longitud,
+        INSERT INTO estacionamientos
+            (duenio_id, nombre, cantidad, latitud, longitud,
+             precio_por_hora, techado, seguridad, banos, altura_max_m)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			duenioID, in.Nombre, in.Cantidad, in.Latitud, in.Longitud,
 			in.PrecioPorHora, in.Techado, seg, banos, in.AlturaMaxM,
 		)
 		if err != nil {
@@ -289,11 +296,15 @@ func main() {
 			return
 		}
 		nuevoID, _ := res.LastInsertId()
+
 		for _, dia := range in.Dias {
-			_, _ = db.Exec(`INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
-			                VALUES (?, ?, ?, ?)`,
-				nuevoID, dia.Dia, dia.Desde, dia.Hasta)
+			_, _ = db.Exec(
+				`INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
+             VALUES (?, ?, ?, ?)`,
+				nuevoID, dia.Dia, dia.Desde, dia.Hasta,
+			)
 		}
+
 		c.JSON(http.StatusOK, gin.H{"id": nuevoID})
 	})
 
