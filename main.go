@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,38 +103,80 @@ func dbErr(c *gin.Context, err error) {
 
 func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Leer header Authorization: "Bearer xxx"
-		auth := c.GetHeader("Authorization")
-		if auth == "" || !strings.HasPrefix(auth, "Bearer ") {
+		auth := strings.TrimSpace(c.GetHeader("Authorization"))
+		if auth == "" || !strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token no enviado"})
 			return
 		}
-		tokenString := strings.TrimPrefix(auth, "Bearer ")
+		tokenString := strings.TrimSpace(auth[len("Bearer "):])
 
-		// Parsear y validar token
 		secret := os.Getenv("JWT_SECRET")
+		if secret == "" {
+			log.Println("❌ JWT_SECRET no configurado")
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "JWT no configurado"})
+			return
+		}
+
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("method not allowed")
+				return nil, fmt.Errorf("algoritmo inválido")
 			}
 			return []byte(secret), nil
 		})
-
 		if err != nil || !token.Valid {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token inválido"})
 			return
 		}
 
-		// Obtener "user_id" del token
-		if claims, ok := token.Claims.(jwt.MapClaims); ok {
-			if uid, ok := claims["user_id"].(float64); ok {
-				// lo guardamos en el contexto → c.Get("userID")
-				c.Set("userID", int(uid))
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Claims inválidos"})
+			return
+		}
+
+		// Validar expiración (por si Parse no lo hace)
+		if exp, ok := claims["exp"].(float64); ok {
+			if time.Now().Unix() > int64(exp) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token expirado"})
+				return
 			}
 		}
 
+		// user_id o sub
+		var uid int
+		switch v := claims["user_id"].(type) {
+		case float64:
+			uid = int(v)
+		case string:
+			if n, err := strconv.Atoi(v); err == nil {
+				uid = n
+			}
+		}
+		if uid == 0 {
+			switch v := claims["sub"].(type) {
+			case float64:
+				uid = int(v)
+			case string:
+				if n, err := strconv.Atoi(v); err == nil {
+					uid = n
+				}
+			}
+		}
+		if uid == 0 {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Falta user_id/sub en token"})
+			return
+		}
+
+		c.Set("userID", uid)
 		c.Next()
 	}
+}
+
+// Helper: ¿el estacionamiento le pertenece al usuario?
+func ownsEstacionamiento(estID, userID int) bool {
+	var n int
+	err := db.QueryRow(`SELECT COUNT(1) FROM estacionamientos WHERE id=? AND duenio_id=?`, estID, userID).Scan(&n)
+	return err == nil && n > 0
 }
 
 // ----------- MAIN ------------
@@ -143,6 +186,17 @@ func main() {
 	defer db.Close()
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.Default()
+
+	r.Use(func(c *gin.Context) {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", "*") // o tu dominio
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		if c.Request.Method == http.MethodOptions {
+			c.AbortWithStatus(200)
+			return
+		}
+		c.Next()
+	})
 
 	// ============= 🔐 AUTH ==============
 
@@ -261,10 +315,19 @@ func main() {
 			return
 		}
 
-		// ← ← ← TOMAR EL userID del token y IGNORAR cualquier duenio_id que venga del front
-		uidVal, _ := c.Get("userID")
-		duenioID := uidVal.(int)
+		// ✅ Tomar el userID desde el token (seguro)
+		uidVal, exists := c.Get("userID")
+		if !exists {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Sin usuario"})
+			return
+		}
+		duenioID, ok := uidVal.(int)
+		if !ok || duenioID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "userID inválido"})
+			return
+		}
 
+		// Normalizar seguridad
 		seg := ""
 		if len(in.Seguridad) > 0 {
 			allowed := map[string]bool{"camaras": true, "vigilante": true}
@@ -278,16 +341,19 @@ func main() {
 				seg = strings.Join(out, ",")
 			}
 		}
+
+		// Normalizar baños
 		banos := 0
 		if in.Banos != nil && *in.Banos {
 			banos = 1
 		}
 
+		// Insert principal
 		res, err := db.Exec(`
-        INSERT INTO estacionamientos
-            (duenio_id, nombre, cantidad, latitud, longitud,
-             precio_por_hora, techado, seguridad, banos, altura_max_m)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    INSERT INTO estacionamientos
+      (duenio_id, nombre, cantidad, latitud, longitud,
+       precio_por_hora, techado, seguridad, banos, altura_max_m)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			duenioID, in.Nombre, in.Cantidad, in.Latitud, in.Longitud,
 			in.PrecioPorHora, in.Techado, seg, banos, in.AlturaMaxM,
 		)
@@ -297,15 +363,17 @@ func main() {
 		}
 		nuevoID, _ := res.LastInsertId()
 
+		// Insert días (si vienen)
 		for _, dia := range in.Dias {
 			_, _ = db.Exec(
 				`INSERT INTO dias_atencion (estacionamiento_id, dia, desde, hasta)
-             VALUES (?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?)`,
 				nuevoID, dia.Dia, dia.Desde, dia.Hasta,
 			)
 		}
 
-		c.JSON(http.StatusOK, gin.H{"id": nuevoID})
+		// ✅ 201 Created
+		c.JSON(http.StatusCreated, gin.H{"id": nuevoID})
 	})
 
 	// =================== 🔎 LISTAR MIS ESTACIONAMIENTOS =================
@@ -347,30 +415,65 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"estacionamientos": list})
 	})
 
-	r.POST("/lugares", func(c *gin.Context) {
+	// Reemplazo de POST /lugares (protegido + check de dueño)
+	r.POST("/lugares", AuthMiddleware(), func(c *gin.Context) {
 		var req ActualizacionLugar
 		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
+
+		uidVal, _ := c.Get("userID")
+		userID := uidVal.(int)
+
+		if !ownsEstacionamiento(req.EstacionamientoID, userID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "No sos dueño del estacionamiento"})
+			return
+		}
+
 		for i := 1; i <= req.Cantidad; i++ {
 			_, _ = db.Exec(`
-				INSERT INTO lugares (estacionamiento_id, numero, ocupado)
-				VALUES (?, ?, ?)
-				ON DUPLICATE KEY UPDATE ocupado = VALUES(ocupado)`,
-				req.EstacionamientoID, i, false)
+      INSERT INTO lugares (estacionamiento_id, numero, ocupado)
+      VALUES (?, ?, ?)
+      ON DUPLICATE KEY UPDATE ocupado = VALUES(ocupado)`,
+				req.EstacionamientoID, i, false,
+			)
 		}
 		c.JSON(http.StatusOK, gin.H{"mensaje": "OK"})
 	})
 
-	r.POST("/lugares/estado", func(c *gin.Context) {
-		var estado EstadoLugar
-		if err := c.BindJSON(&estado); err != nil {
+	// ✅ BLOQUE NUEVO: PROTEGIDO + CHECK DE DUEÑO
+	r.POST("/lugares/estado", AuthMiddleware(), func(c *gin.Context) {
+		var in EstadoLugar
+		if err := c.ShouldBindJSON(&in); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
 			return
 		}
-		_, _ = db.Exec(`UPDATE lugares SET ocupado=? WHERE estacionamiento_id=? AND numero=?`,
-			estado.Ocupado, estado.EstacionamientoID, estado.Numero)
+
+		uidVal, ok := c.Get("userID")
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Sin usuario"})
+			return
+		}
+		userID, ok := uidVal.(int)
+		if !ok || userID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "userID inválido"})
+			return
+		}
+
+		if !ownsEstacionamiento(in.EstacionamientoID, userID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "No sos dueño del estacionamiento"})
+			return
+		}
+
+		if _, err := db.Exec(
+			`UPDATE lugares SET ocupado=? WHERE estacionamiento_id=? AND numero=?`,
+			in.Ocupado, in.EstacionamientoID, in.Numero,
+		); err != nil {
+			dbErr(c, err)
+			return
+		}
+
 		c.JSON(http.StatusOK, gin.H{"mensaje": "OK"})
 	})
 
