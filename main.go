@@ -477,170 +477,214 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"mensaje": "OK"})
 	})
 
-	r.GET("/estado/:id", func(c *gin.Context) {
-		id := c.Param("id")
-		rows, err := db.Query(`
-			SELECT numero, ocupado FROM lugares WHERE estacionamiento_id=?`, id)
-		if err != nil {
-			dbErr(c, err)
-			return
-		}
-		defer rows.Close()
-		var lug []LugarSimple
-		for rows.Next() {
-			var l LugarSimple
-			if err := rows.Scan(&l.Numero, &l.Ocupado); err == nil {
-				lug = append(lug, l)
-			}
-		}
-		c.JSON(200, gin.H{"lugares": lug})
-	})
+	// 🔎 Detalle público de un estacionamiento (para la app de usuarios)
+	r.GET("/estacionamientos/:id/detalle", func(c *gin.Context) {
+		idStr := c.Param("id")
 
-	r.GET("/estacionamientos", func(c *gin.Context) {
+		var (
+			id        int
+			nombre    string
+			lat, lng  float64
+			cantidad  int
+			precio    sql.NullFloat64
+			techado   sql.NullString
+			seguridad sql.NullString
+			banos     sql.NullInt64
+			alturaMax sql.NullFloat64
+		)
 
-		// 🔎 Detalle público de un estacionamiento (para la app de usuarios)
-		r.GET("/estacionamientos/:id/detalle", func(c *gin.Context) {
-			idStr := c.Param("id")
-
-			var (
-				id        int
-				nombre    string
-				lat, lng  float64
-				cantidad  int
-				precio    sql.NullFloat64
-				techado   sql.NullString
-				seguridad sql.NullString
-				banos     sql.NullInt64
-				alturaMax sql.NullFloat64
-			)
-
-			err := db.QueryRow(`
+		err := db.QueryRow(`
         SELECT id, nombre, latitud, longitud, cantidad,
                precio_por_hora, techado, seguridad, banos, altura_max_m
         FROM estacionamientos
         WHERE id = ?
     `, idStr).Scan(&id, &nombre, &lat, &lng, &cantidad,
-				&precio, &techado, &seguridad, &banos, &alturaMax)
-			if err != nil {
-				if err == sql.ErrNoRows {
-					c.JSON(http.StatusNotFound, gin.H{"error": "No existe"})
-					return
-				}
-				dbErr(c, err)
+			&precio, &techado, &seguridad, &banos, &alturaMax)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "No existe"})
 				return
 			}
+			dbErr(c, err)
+			return
+		}
 
-			// Dias de atención (mismo orden que usás en toda la app)
-			rows, err := db.Query(`
+		// Días de atención (orden lun..dom)
+		rows, err := db.Query(`
         SELECT dia, desde, hasta
         FROM dias_atencion
         WHERE estacionamiento_id = ?
         ORDER BY FIELD(dia,'lun','mar','mie','jue','vie','sab','dom')`, id)
-			if err != nil {
-				dbErr(c, err)
-				return
-			}
-			defer rows.Close()
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		defer rows.Close()
 
-			// Reutilizamos tu tipo DiaAtencion para mantener el lineamiento
-			dias := make([]DiaAtencion, 0, 7)
-			for rows.Next() {
-				var d DiaAtencion
-				if err := rows.Scan(&d.Dia, &d.Desde, &d.Hasta); err == nil {
-					dias = append(dias, d)
-				}
+		dias := make([]DiaAtencion, 0, 7)
+		for rows.Next() {
+			var d DiaAtencion
+			if err := rows.Scan(&d.Dia, &d.Desde, &d.Hasta); err == nil {
+				dias = append(dias, d)
 			}
+		}
 
-			// Resumen de lugares
-			var total, ocupados int
-			err = db.QueryRow(`
+		// Resumen de lugares
+		var total, ocupados int
+		err = db.QueryRow(`
         SELECT COALESCE(COUNT(*),0) AS total,
                COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END),0) AS ocupados
         FROM lugares
         WHERE estacionamiento_id = ?`, id).Scan(&total, &ocupados)
-			if err != nil {
-				dbErr(c, err)
-				return
-			}
-			libres := total - ocupados
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		libres := total - ocupados
 
-			// Normalizar "seguridad" a uno de: camaras | vigilante | ninguna
-			segVal := "ninguna"
-			if seguridad.Valid && seguridad.String != "" {
-				s := strings.ToLower(seguridad.String)
-				if strings.Contains(s, "camaras") {
-					segVal = "camaras"
-				} else if strings.Contains(s, "vigilante") {
-					segVal = "vigilante"
+		// Normalizar seguridad
+		segVal := "ninguna"
+		if seguridad.Valid && seguridad.String != "" {
+			s := strings.ToLower(seguridad.String)
+			if strings.Contains(s, "camaras") {
+				segVal = "camaras"
+			}
+			if strings.Contains(s, "vigilante") {
+				segVal = "vigilante"
+			}
+		}
+
+		// Horario simple: si todos 24 hs
+		horario := ""
+		if len(dias) > 0 {
+			all24 := true
+			for _, d := range dias {
+				if !(d.Desde == "00:00" && d.Hasta == "23:59") {
+					all24 = false
+					break
 				}
 			}
-
-			// Horario simple: si todos los días son 00:00–23:59 ⇒ "Todos los días 24 hs"
-			horario := ""
-			if len(dias) > 0 {
-				all24 := true
-				for _, d := range dias {
-					if !(d.Desde == "00:00" && d.Hasta == "23:59") {
-						all24 = false
-						break
-					}
-				}
-				if all24 {
-					horario = "Todos los días 24 hs"
-				}
+			if all24 {
+				horario = "Todos los días 24 hs"
 			}
+		}
 
-			c.JSON(http.StatusOK, gin.H{
-				"id":       id,
-				"nombre":   nombre,
-				"latitud":  lat,
-				"longitud": lng,
-				"total":    total,
-				"ocupados": ocupados,
-				"libres":   libres,
-				"precio": func() *float64 {
-					if precio.Valid {
-						return &precio.Float64
-					}
-					return nil
-				}(),
-				"techado": func() *string {
-					if techado.Valid {
-						return &techado.String
-					}
-					return nil
-				}(),
-				"seguridad": segVal,
-				"banos":     banos.Valid && banos.Int64 == 1,
-				"altura_max_m": func() *float64 {
-					if alturaMax.Valid {
-						return &alturaMax.Float64
-					}
-					return nil
-				}(),
-				"horario": horario,
-				"dias":    dias,
-			})
+		c.JSON(http.StatusOK, gin.H{
+			"id":       id,
+			"nombre":   nombre,
+			"latitud":  lat,
+			"longitud": lng,
+			"total":    total,
+			"ocupados": ocupados,
+			"libres":   libres,
+			"precio": func() *float64 {
+				if precio.Valid {
+					return &precio.Float64
+				}
+				return nil
+			}(),
+			"techado": func() *string {
+				if techado.Valid {
+					return &techado.String
+				}
+				return nil
+			}(),
+			"seguridad": segVal,
+			"banos":     banos.Valid && banos.Int64 == 1,
+			"altura_max_m": func() *float64 {
+				if alturaMax.Valid {
+					return &alturaMax.Float64
+				}
+				return nil
+			}(),
+			"horario": horario,
+			"dias":    dias,
 		})
+	})
 
-		// 🧩 Resumen público chiquito (útil para polling live desde la app de usuarios)
-		r.GET("/estacionamientos/:id/resumen", func(c *gin.Context) {
-			idStr := c.Param("id")
-			var total, ocupados int
-			if err := db.QueryRow(`
+	// 🧩 Resumen público chiquito (polling)
+	r.GET("/estacionamientos/:id/resumen", func(c *gin.Context) {
+		idStr := c.Param("id")
+		var total, ocupados int
+		if err := db.QueryRow(`
         SELECT COALESCE(COUNT(*),0),
                COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END),0)
         FROM lugares WHERE estacionamiento_id = ?`, idStr).Scan(&total, &ocupados); err != nil {
-				dbErr(c, err)
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{
-				"total":    total,
-				"ocupados": ocupados,
-				"libres":   total - ocupados,
-			})
+			dbErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"total":    total,
+			"ocupados": ocupados,
+			"libres":   total - ocupados,
 		})
+	})
 
+	// 📍 Cerca de (lat,lng) en un radio en km. Ej: /estacionamientos/cerca?lat=..&lng=..&km=0.8
+	r.GET("/estacionamientos/cerca", func(c *gin.Context) {
+		latStr := c.Query("lat")
+		lngStr := c.Query("lng")
+		kmStr := c.DefaultQuery("km", "1")
+
+		lat0, err1 := strconv.ParseFloat(latStr, 64)
+		lng0, err2 := strconv.ParseFloat(lngStr, 64)
+		radioKm, err3 := strconv.ParseFloat(kmStr, 64)
+		if err1 != nil || err2 != nil || err3 != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Parámetros inválidos"})
+			return
+		}
+
+		type Item struct {
+			ID          int64   `json:"id"`
+			Nombre      string  `json:"nombre"`
+			Latitud     float64 `json:"latitud"`
+			Longitud    float64 `json:"longitud"`
+			Total       int     `json:"total"`
+			Ocupados    int     `json:"ocupados"`
+			Libres      int     `json:"libres"`
+			DistanciaKM float64 `json:"distancia_km"`
+		}
+
+		rows, err := db.Query(`
+      SELECT
+        e.id,
+        e.nombre,
+        e.latitud,
+        e.longitud,
+        e.cantidad,
+        COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END),0) AS ocupados,
+        (6371 * ACOS(
+          COS(RADIANS(?)) * COS(RADIANS(e.latitud)) *
+          COS(RADIANS(e.longitud) - RADIANS(?)) +
+          SIN(RADIANS(?)) * SIN(RADIANS(e.latitud))
+        )) AS distancia_km
+      FROM estacionamientos e
+      LEFT JOIN lugares l ON l.estacionamiento_id = e.id
+      GROUP BY e.id
+      HAVING distancia_km <= ?
+      ORDER BY distancia_km ASC
+    `, lat0, lng0, lat0, radioKm)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		defer rows.Close()
+
+		var list []Item
+		for rows.Next() {
+			var it Item
+			var cantidad int
+			if err := rows.Scan(&it.ID, &it.Nombre, &it.Latitud, &it.Longitud, &cantidad, &it.Ocupados, &it.DistanciaKM); err == nil {
+				it.Total = cantidad
+				it.Libres = cantidad - it.Ocupados
+				list = append(list, it)
+			}
+		}
+		c.JSON(http.StatusOK, gin.H{"estacionamientos": list})
+	})
+
+	// 📍 Lista pública de estacionamientos (mapa)
+	r.GET("/estacionamientos", func(c *gin.Context) {
 		type Item struct {
 			ID       int64   `json:"id"`
 			Nombre   string  `json:"nombre"`
@@ -651,16 +695,17 @@ func main() {
 			Libres   int     `json:"libres"`
 		}
 		rows, err := db.Query(`
-			SELECT e.id, e.nombre, e.latitud, e.longitud,
-			       e.cantidad, COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END),0)
-			FROM estacionamientos e
-			LEFT JOIN lugares l ON l.estacionamiento_id = e.id
-			GROUP BY e.id`)
+        SELECT e.id, e.nombre, e.latitud, e.longitud,
+               e.cantidad, COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END),0)
+        FROM estacionamientos e
+        LEFT JOIN lugares l ON l.estacionamiento_id = e.id
+        GROUP BY e.id`)
 		if err != nil {
 			dbErr(c, err)
 			return
 		}
 		defer rows.Close()
+
 		var list []Item
 		for rows.Next() {
 			var it Item
@@ -669,7 +714,7 @@ func main() {
 				list = append(list, it)
 			}
 		}
-		c.JSON(200, gin.H{"estacionamientos": list})
+		c.JSON(http.StatusOK, gin.H{"estacionamientos": list})
 	})
 
 	// ✅ Puerto dinámico
@@ -679,7 +724,5 @@ func main() {
 	}
 	log.Println("🚀 listening on port", port)
 	r.Run(":" + port)
-	// 👇 esto es solo para que el import "fmt" no quede sin usar
 	_ = fmt.Println
-
 }
