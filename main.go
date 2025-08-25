@@ -497,6 +497,150 @@ func main() {
 	})
 
 	r.GET("/estacionamientos", func(c *gin.Context) {
+
+		// 🔎 Detalle público de un estacionamiento (para la app de usuarios)
+		r.GET("/estacionamientos/:id/detalle", func(c *gin.Context) {
+			idStr := c.Param("id")
+
+			var (
+				id        int
+				nombre    string
+				lat, lng  float64
+				cantidad  int
+				precio    sql.NullFloat64
+				techado   sql.NullString
+				seguridad sql.NullString
+				banos     sql.NullInt64
+				alturaMax sql.NullFloat64
+			)
+
+			err := db.QueryRow(`
+        SELECT id, nombre, latitud, longitud, cantidad,
+               precio_por_hora, techado, seguridad, banos, altura_max_m
+        FROM estacionamientos
+        WHERE id = ?
+    `, idStr).Scan(&id, &nombre, &lat, &lng, &cantidad,
+				&precio, &techado, &seguridad, &banos, &alturaMax)
+			if err != nil {
+				if err == sql.ErrNoRows {
+					c.JSON(http.StatusNotFound, gin.H{"error": "No existe"})
+					return
+				}
+				dbErr(c, err)
+				return
+			}
+
+			// Dias de atención (mismo orden que usás en toda la app)
+			rows, err := db.Query(`
+        SELECT dia, desde, hasta
+        FROM dias_atencion
+        WHERE estacionamiento_id = ?
+        ORDER BY FIELD(dia,'lun','mar','mie','jue','vie','sab','dom')`, id)
+			if err != nil {
+				dbErr(c, err)
+				return
+			}
+			defer rows.Close()
+
+			// Reutilizamos tu tipo DiaAtencion para mantener el lineamiento
+			dias := make([]DiaAtencion, 0, 7)
+			for rows.Next() {
+				var d DiaAtencion
+				if err := rows.Scan(&d.Dia, &d.Desde, &d.Hasta); err == nil {
+					dias = append(dias, d)
+				}
+			}
+
+			// Resumen de lugares
+			var total, ocupados int
+			err = db.QueryRow(`
+        SELECT COALESCE(COUNT(*),0) AS total,
+               COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END),0) AS ocupados
+        FROM lugares
+        WHERE estacionamiento_id = ?`, id).Scan(&total, &ocupados)
+			if err != nil {
+				dbErr(c, err)
+				return
+			}
+			libres := total - ocupados
+
+			// Normalizar "seguridad" a uno de: camaras | vigilante | ninguna
+			segVal := "ninguna"
+			if seguridad.Valid && seguridad.String != "" {
+				s := strings.ToLower(seguridad.String)
+				if strings.Contains(s, "camaras") {
+					segVal = "camaras"
+				} else if strings.Contains(s, "vigilante") {
+					segVal = "vigilante"
+				}
+			}
+
+			// Horario simple: si todos los días son 00:00–23:59 ⇒ "Todos los días 24 hs"
+			horario := ""
+			if len(dias) > 0 {
+				all24 := true
+				for _, d := range dias {
+					if !(d.Desde == "00:00" && d.Hasta == "23:59") {
+						all24 = false
+						break
+					}
+				}
+				if all24 {
+					horario = "Todos los días 24 hs"
+				}
+			}
+
+			c.JSON(http.StatusOK, gin.H{
+				"id":       id,
+				"nombre":   nombre,
+				"latitud":  lat,
+				"longitud": lng,
+				"total":    total,
+				"ocupados": ocupados,
+				"libres":   libres,
+				"precio": func() *float64 {
+					if precio.Valid {
+						return &precio.Float64
+					}
+					return nil
+				}(),
+				"techado": func() *string {
+					if techado.Valid {
+						return &techado.String
+					}
+					return nil
+				}(),
+				"seguridad": segVal,
+				"banos":     banos.Valid && banos.Int64 == 1,
+				"altura_max_m": func() *float64 {
+					if alturaMax.Valid {
+						return &alturaMax.Float64
+					}
+					return nil
+				}(),
+				"horario": horario,
+				"dias":    dias,
+			})
+		})
+
+		// 🧩 Resumen público chiquito (útil para polling live desde la app de usuarios)
+		r.GET("/estacionamientos/:id/resumen", func(c *gin.Context) {
+			idStr := c.Param("id")
+			var total, ocupados int
+			if err := db.QueryRow(`
+        SELECT COALESCE(COUNT(*),0),
+               COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END),0)
+        FROM lugares WHERE estacionamiento_id = ?`, idStr).Scan(&total, &ocupados); err != nil {
+				dbErr(c, err)
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{
+				"total":    total,
+				"ocupados": ocupados,
+				"libres":   total - ocupados,
+			})
+		})
+
 		type Item struct {
 			ID       int64   `json:"id"`
 			Nombre   string  `json:"nombre"`
