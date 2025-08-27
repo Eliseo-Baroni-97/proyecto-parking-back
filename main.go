@@ -557,19 +557,12 @@ func main() {
 			return
 		}
 
-		// 2) Resumen de lugares (rápido)
-		var (
-			total    int
-			ocupados int
-		)
+		// 2) Resumen de lugares (usa e.cantidad como total y suma ocupados de lugares)
+		var total, ocupados int
 		if err := db.QueryRow(`
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END), 0)
-		FROM lugares
-		WHERE estacionamiento_id = ?`,
-			id,
-		).Scan(&total, &ocupados); err != nil {
+    SELECT e.cantidad AS total,COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END), 0) AS ocupadosFROM estacionamientos eLEFT JOIN lugares l ON l.estacionamiento_id = e.id
+    WHERE e.id = ? GROUP BY e.id
+`, id).Scan(&total, &ocupados); err != nil {
 			dbErr(c, err)
 			return
 		}
@@ -639,9 +632,9 @@ func main() {
 		})
 	})
 
-	// GET /public/estacionamientos/:id/resumen
-	// Solo conteo de lugares (total/ocupados/libres). Público, sin auth.
-	r.GET("/public/estacionamientos/:id/resumen", func(c *gin.Context) {
+	// ======== NUEVOS ENDPOINTS PÚBLICOS (usuarios) — ADITIVOS ========
+
+	r.GET("/public/estacionamientos/:id/detalle", func(c *gin.Context) {
 		idStr := c.Param("id")
 		id, err := strconv.Atoi(idStr)
 		if err != nil || id <= 0 {
@@ -649,24 +642,111 @@ func main() {
 			return
 		}
 
-		var total, ocupados int
-		if err := db.QueryRow(`
-		SELECT
-			COUNT(*),
-			COALESCE(SUM(CASE WHEN ocupado=1 THEN 1 ELSE 0 END), 0)
-		FROM lugares
-		WHERE estacionamiento_id = ?`,
+		var (
+			eID       int
+			nombre    string
+			lat       float64
+			lng       float64
+			cantidad  int
+			precio    sql.NullFloat64
+			techado   sql.NullString
+			seguridad sql.NullString
+			banosInt  int
+			altura    sql.NullFloat64
+		)
+
+		err = db.QueryRow(`
+        SELECT id, nombre, latitud, longitud, cantidad,
+               precio_por_hora, techado, seguridad, IFNULL(banos,0) AS banos, altura_max_m
+        FROM estacionamientos
+        WHERE id = ?`,
 			id,
-		).Scan(&total, &ocupados); err != nil {
+		).Scan(&eID, &nombre, &lat, &lng, &cantidad, &precio, &techado, &seguridad, &banosInt, &altura)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Estacionamiento no encontrado"})
+				return
+			}
 			dbErr(c, err)
 			return
 		}
+
+		// 2) Resumen (cantidad como total + ocupados reales)
+		var total, ocupados int
+		if err := db.QueryRow(`
+    SELECT e.cantidad AS total,
+           COALESCE(SUM(CASE WHEN l.ocupado=1 THEN 1 ELSE 0 END), 0) AS ocupados
+    FROM estacionamientos e
+    LEFT JOIN lugares l ON l.estacionamiento_id = e.id
+    WHERE e.id = ?
+    GROUP BY e.id
+`, id).Scan(&total, &ocupados); err != nil {
+			dbErr(c, err)
+			return
+		}
+
 		libres := total - ocupados
-		c.JSON(http.StatusOK, gin.H{"total": total, "ocupados": ocupados, "libres": libres})
+
+		// 3) Días (opcional)
+		rowsDias, err := db.Query(`
+        SELECT dia, desde, hasta
+        FROM dias_atencion
+        WHERE estacionamiento_id = ?
+        ORDER BY dia, desde`,
+			id,
+		)
+		dias := make([]gin.H, 0, 7)
+		if err == nil {
+			defer rowsDias.Close()
+			for rowsDias.Next() {
+				var dia, desde, hasta string
+				if err := rowsDias.Scan(&dia, &desde, &hasta); err == nil {
+					dias = append(dias, gin.H{"dia": dia, "desde": desde, "hasta": hasta})
+				}
+			}
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"id":       eID,
+			"nombre":   nombre,
+			"latitud":  lat,
+			"longitud": lng,
+			"precio": func() *float64 {
+				if precio.Valid {
+					return &precio.Float64
+				}
+				return nil
+			}(),
+			"techado": func() *string {
+				if techado.Valid {
+					return &techado.String
+				}
+				return nil
+			}(),
+			"seguridad": func() *string {
+				if seguridad.Valid {
+					return &seguridad.String
+				}
+				return nil
+			}(),
+			"banos": banosInt == 1,
+			"altura_max_m": func() *float64 {
+				if altura.Valid {
+					return &altura.Float64
+				}
+				return nil
+			}(),
+			"resumen": gin.H{
+				"total": total, "ocupados": ocupados, "libres": libres,
+			},
+			"dias": dias,
+		})
 	})
 
+	port = os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Println("🚀 listening on port", port)
 	r.Run(":" + port)
-
-	// Evitar warning por fmt importado
-	_ = fmt.Println
 }
