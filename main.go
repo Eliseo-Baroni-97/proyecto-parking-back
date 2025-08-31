@@ -427,23 +427,6 @@ func main() {
 			c.JSON(http.StatusForbidden, gin.H{"error": "No sos dueño del estacionamiento"})
 			return
 		}
-	})
-
-	// Crear/Actualizar lugares (protegido + check de dueño)
-	r.POST("/lugares", AuthMiddleware(), func(c *gin.Context) {
-		var req ActualizacionLugar
-		if err := c.BindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
-			return
-		}
-
-		uidVal, _ := c.Get("userID")
-		userID := uidVal.(int)
-
-		if !ownsEstacionamiento(req.EstacionamientoID, userID) {
-			c.JSON(http.StatusForbidden, gin.H{"error": "No sos dueño del estacionamiento"})
-			return
-		}
 
 		for i := 1; i <= req.Cantidad; i++ {
 			_, _ = db.Exec(`
