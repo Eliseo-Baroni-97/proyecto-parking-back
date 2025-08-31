@@ -89,6 +89,7 @@ type User struct {
 	ID           int
 	Email        string
 	PasswordHash string
+	Vip          bool
 }
 
 // ----------- HELPERS -------------
@@ -241,13 +242,15 @@ func main() {
 		fmt.Println("📥 Payload login recibido:", payload)
 
 		var u User
-		err := db.QueryRow(`SELECT id, email, password_hash FROM usuarios WHERE email = ?`, payload.Email).
-			Scan(&u.ID, &u.Email, &u.PasswordHash)
+		var vipInt int
+		err := db.QueryRow(`SELECT id, email, password_hash, vip FROM usuarios WHERE email = ?`, payload.Email).
+			Scan(&u.ID, &u.Email, &u.PasswordHash, &vipInt)
 		if err != nil {
-			fmt.Println("❌ No se encontró usuario:", err)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Credenciales inválidas"})
 			return
 		}
+		u.Vip = vipInt == 1
+
 		fmt.Println("🔎 Usuario encontrado:", u.Email, "hash:", u.PasswordHash)
 
 		if err := bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(payload.Password)); err != nil {
@@ -281,7 +284,9 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"token":   signed,
 			"user_id": u.ID,
+			"vip":     u.Vip,
 		})
+
 	})
 
 	// ============= 🚗 ESTACIONAMIENTOS ==============
