@@ -169,11 +169,27 @@ func AuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// Helper: ¿el estacionamiento le pertenece al usuario?
 func ownsEstacionamiento(estID, userID int) bool {
 	var n int
 	err := db.QueryRow(`SELECT COUNT(1) FROM estacionamientos WHERE id=? AND duenio_id=?`, estID, userID).Scan(&n)
 	return err == nil && n > 0
+}
+
+// —— VIP & Reservas helpers ——
+func userIsVIP(userID int) (bool, error) {
+	var vip int
+	err := db.QueryRow(`SELECT vip FROM usuarios WHERE id=?`, userID).Scan(&vip)
+	return vip == 1, err
+}
+
+func hasActiveReservation(userID, estID int) (bool, error) {
+	var cnt int
+	err := db.QueryRow(`
+		SELECT COUNT(1)
+		FROM reservas
+		WHERE user_id=? AND estacionamiento_id=? AND status=1
+	`, userID, estID).Scan(&cnt)
+	return cnt > 0, err
 }
 
 // ----------- MAIN ------------
@@ -270,6 +286,7 @@ func main() {
 		claims := jwt.MapClaims{
 			"user_id": u.ID,
 			"email":   u.Email,
+			"vip":     u.Vip,
 			"exp":     time.Now().Add(24 * time.Hour).Unix(),
 		}
 		token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
@@ -393,6 +410,23 @@ func main() {
 		}
 
 		c.JSON(http.StatusOK, gin.H{"estacionamientos": list})
+	})
+
+	// Crear/Actualizar lugares (protegido + check de dueño)
+	r.POST("/lugares", AuthMiddleware(), func(c *gin.Context) {
+		var req ActualizacionLugar
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
+			return
+		}
+
+		uidVal, _ := c.Get("userID")
+		userID := uidVal.(int)
+
+		if !ownsEstacionamiento(req.EstacionamientoID, userID) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "No sos dueño del estacionamiento"})
+			return
+		}
 	})
 
 	// Crear/Actualizar lugares (protegido + check de dueño)
@@ -650,6 +684,98 @@ func main() {
 
 		libres := total - ocupados
 		c.JSON(http.StatusOK, gin.H{"total": total, "ocupados": ocupados, "libres": libres})
+	})
+
+	// ======== RESERVAS (VIP) ========
+
+	// POST /reservas { "estacionamiento_id": number }
+	r.POST("/reservas", AuthMiddleware(), func(c *gin.Context) {
+		var body struct {
+			EstacionamientoID int `json:"estacionamiento_id"`
+		}
+		if err := c.BindJSON(&body); err != nil || body.EstacionamientoID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
+			return
+		}
+
+		uidVal, _ := c.Get("userID")
+		userID := uidVal.(int)
+
+		// Solo VIP
+		isVip, err := userIsVIP(userID)
+		if err != nil || !isVip {
+			c.JSON(http.StatusForbidden, gin.H{"error": "Solo usuarios VIP pueden reservar"})
+			return
+		}
+
+		// ¿ya tiene activa?
+		exists, err := hasActiveReservation(userID, body.EstacionamientoID)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		if exists {
+			c.JSON(http.StatusConflict, gin.H{"error": "Ya tenés una reserva activa en este estacionamiento"})
+			return
+		}
+
+		_, err = db.Exec(`
+		INSERT INTO reservas (user_id, estacionamiento_id, status)
+		VALUES (?,?,1)
+	`, userID, body.EstacionamientoID)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"ok": true})
+	})
+
+	// DELETE /reservas { "estacionamiento_id": number }
+	r.DELETE("/reservas", AuthMiddleware(), func(c *gin.Context) {
+		var body struct {
+			EstacionamientoID int `json:"estacionamiento_id"`
+		}
+		if err := c.BindJSON(&body); err != nil || body.EstacionamientoID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Formato inválido"})
+			return
+		}
+
+		uidVal, _ := c.Get("userID")
+		userID := uidVal.(int)
+
+		res, err := db.Exec(`
+		UPDATE reservas
+		SET status=0, canceled_at=NOW()
+		WHERE user_id=? AND estacionamiento_id=? AND status=1
+	`, userID, body.EstacionamientoID)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		aff, _ := res.RowsAffected()
+		if aff == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "No tenés una reserva activa para cancelar"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	// GET /reservas/estado?estacionamiento_id=123
+	r.GET("/reservas/estado", AuthMiddleware(), func(c *gin.Context) {
+		estID, _ := strconv.Atoi(c.Query("estacionamiento_id"))
+		if estID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "id inválido"})
+			return
+		}
+		uidVal, _ := c.Get("userID")
+		userID := uidVal.(int)
+
+		ok, err := hasActiveReservation(userID, estID)
+		if err != nil {
+			dbErr(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"activa": ok})
 	})
 
 	// ✅ Puerto dinámico y arranque
